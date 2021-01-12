@@ -1,0 +1,196 @@
+---
+title: "ø"
+author: "PernilleB"
+date: "9/22/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+## INTRO
+The Himalayan Database is a compilation of records for all expeditions that have climbed in the Nepal Himalaya. The database is based on the expedition archives of Elizabeth Hawley, a longtime journalist based in Kathmandu, and it is supplemented by information gathered from books, alpine journals and correspondence with Himalayan climbers.
+
+The data cover all expeditions from 1905 through Spring 2019 to more than 465 significant peaks in Nepal. Also included are expeditions to both sides of border peaks such as Everest, Cho Oyu, Makalu and Kangchenjunga as well as to some smaller border peaks. Data on expeditions to trekking peaks are included for early attempts, first ascents and major accidents.
+
+1/3 of the deaths are Sherpa climbers. 
+
+
+```{r}
+# Get the Data
+
+# Read in with tidytuesdayR package 
+pacman::p_load(tidyverse,tidytuesdayR,scales,ggplot2,dplyr)
+
+# Install from CRAN via: install.packages("tidytuesdayR")
+# This loads the readme and all the datasets for the week of interest
+
+# Either ISO-8601 date or year/week works!
+
+tuesdata <- tidytuesdayR::tt_load('2020-09-22')
+tuesdata <- tidytuesdayR::tt_load(2020, week = 39)
+
+# Or read in the data manually
+
+#members <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-09-22/members.csv')
+#expeditions <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-09-22/expeditions.csv')
+#peaks <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-09-22/peaks.csv')
+
+members <- read.csv("members.csv")
+expeditions <- read.csv("expeditions.csv")
+peaks <- read.csv("peaks.csv")
+
+tt <- tt_load("2020-09-22")
+
+```
+
+## Getting started with peaks
+```{r}
+# Peaks: What variables do we have here? 
+variable.names(peaks)
+```
+
+[1] "X"                          "peak_id"                    "peak_name"                  "peak_alternative_name"     
+[5] "height_metres"              "climbing_status"            "first_ascent_year"          "first_ascent_country"      
+[9] "first_ascent_expedition_id"
+
+```{r}
+# Rename 
+peaks <- peaks %>% 
+  rename(height_meters = height_metres)
+
+# Plot over height
+peaks %>% 
+  arrange(desc(height_meters)) %>% 
+  head(20) %>% 
+  mutate(peak_name = fct_reorder(peak_name, height_meters)) %>% # Don't know what fct does, maybe just a factor? 
+  ggplot(aes(height_meters, peak_name, fill = first_ascent_year)) + geom_col() #before it was climbing status filled
+```
+
+
+```{r}
+# Plot over most deaths
+peaks %>% 
+  arrange(desc(deaths)) %>% 
+  head(20) %>% 
+  mutate(peak_name = fct_reorder(peak_name, height_meters)) %>% 
+  ggplot(aes(height_meters, peak_name, fill = climbing_status)) + geom_col()
+
+```
+
+
+## Getting started with Expeditions
+```{r}
+# Expeditions: What variables do we have here? 
+variable.names(expeditions)
+
+```
+ [1] "X"                  "expedition_id"      "peak_id"            "peak_name"          "year"               "season"            
+ [7] "basecamp_date"      "highpoint_date"     "termination_date"   "termination_reason" "highpoint_metres"   "members"           
+[13] "member_deaths"      "hired_staff"        "hired_staff_deaths" "oxygen_used"        "trekking_agency"   
+
+Looking at expeditions:
+* Fraction of succesful climbs pr mountain pr year
+* Rate of death over time / pr mountain (by all memb or hired)
+* death rate by mountain and age
+* death causes
+* correlation between frequency of expeditions and death rate
+
+
+```{r}
+peaks_summarized <- expeditions %>% 
+  group_by(peak_id,peak_name) %>% 
+  summarize(n_climbs = n(), # summarise the climbs
+             across(members:hired_staff_deaths, sum), # using across to 
+            first_climb = min(year)) %>% 
+  ungroup() %>% # have to ungroup when grouping two things
+  arrange(desc(n_climbs)) %>% 
+  mutate(pct_death = member_deaths / members,
+         pct_hired_staff_deaths = hired_staff_deaths / hired_staff) %>% 
+  inner_join(peaks %>% select(peak_id, height_meters), by ="peak_id")
+
+# Now we have
+variable.names(peaks_summarized)
+  
+```
+[1] "peak_id"                "peak_name"              "n_climbs"               "members"                "member_deaths"         
+ [6] "hired_staff"            "hired_staff_deaths"     "first_climb"            "pct_death"              "pct_hired_staff_deaths"
+[11] "height_meters
+
+# What is the deadliest mountain?
+```{r}
+peaks_summarized %>% 
+  arrange(desc(pct_death))
+
+ # plot
+peaks_summarized %>% 
+  arrange(desc(pct_death)) %>% 
+  head(20) %>% 
+  mutate(peak_name = fct_reorder(peak_name, pct_death)) %>% 
+  ggplot(aes(pct_death,peak_name, fill = n_climbs)) + geom_col()
+
+```
+
+Issue with deathrate: 
+There is going to be noise in the ones that have fewer climbs. Malaku 2 has a 105 climbs and 3 staff deaths. One more death a lot higher, one less death, then a lot lower. Influential datapoints. There is a lot of variation based on the low totals. We are thus going to need to use a particular method. 
+
+Pisang has 10 deaths. 
+
+Interested in the ones only 100 or above:
+```{r}
+
+peaks_summarized %>% 
+  filter(members >= 100) %>% 
+  arrange(desc(pct_death)) 
+
+```
+
+Something with empirical bayes: There is more evidence for a mountain like ANN1, with 1453 members, and 54 member_deaths. More evidence, so we can believe the deathrate more. The fractions are similar, but the bigger number means less variation due to noise. 
+
+We can adjust for this
+```{r}
+
+#install.packages(devtools::install_github("dgrtwo/ebbr"))
+library(ebbr)
+
+peaks_eb <- peaks_summarized %>% 
+  filter(members >= 50) %>% 
+  arrange(desc(pct_death)) %>% 
+  add_ebb_estimate(member_deaths, members) %>% #Get empirical bayes estimate of death rate of this mountain.
+  ggplot(aes(pct_death,.fitted))+
+  geom_point(aes(color = members))+
+  geom_abline(color=  "red")+ 
+  scale_x_continuous(labels = percent)+
+  scale_y_continuous(labels = percent)+
+  scale_color_continuous(trans = "log10")+
+  labs(x = "deathrate raw", y = "death rate ,empirical bayes adj")
+
+```
+
+This plot shows that some mountains have a deathrate of 0.
+
+The overall deathrate across these mountains is something than 1,5%. If you're lower chances are we underestimated your. 
+The point to the right, we had a 12% deathrate for that mountain, but we think it was overestimated. 
+Across peaks adjusts for noise. The lower the number of members/climbers, the more it was adjused.
+
+
+```{r}
+peaks_eb %>% 
+  arrange(desc(.fitted)) %>% 
+  head(20) %>% 
+  mutate(peak_name = fct_reorder(peak_name, .fitted)) %>% 
+  ggplot(aes(.fitted, peak_name))+
+  geom_col() + 
+  geom_errorbarh(aes(xmin = .low, xmax = .high))
+
+
+```
+
+
+
+
+
+
+
